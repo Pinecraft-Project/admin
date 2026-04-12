@@ -42,7 +42,10 @@ export default {
       leftPanelWidth: 50,
       isResizing: false,
       showCreatePostModal: false,
-      newPostSlug: ''
+      newPostSlug: '',
+      aiPrompt: '',
+      aiIsLoading: false,
+      isAIPanelCollapsed: true
     };
   },
   mounted: async function() {
@@ -481,6 +484,249 @@ export default {
         this.isSaving = false;
       }
     },
+    getOllamaSettings() {
+      const baseUrl = String(window.localStorage.getItem('Ollama URL') || '')
+        .trim()
+        .replace(/\/+$/, '');
+      const model = String(window.localStorage.getItem('Ollama model') || '').trim();
+      const masterPrompt = String(window.localStorage.getItem('Ollama master prompt') || '').trim();
+      return { baseUrl, model, masterPrompt };
+    },
+    isAIConfigured() {
+      const { baseUrl, model } = this.getOllamaSettings();
+      return !!baseUrl && !!model;
+    },
+    buildOllamaPrompt(mode, instruction, markdown, masterPrompt = '') {
+      const prefix = masterPrompt
+        ? [`Master instruction (always follow): ${masterPrompt}`, ''].join('\n')
+        : '';
+
+      if (mode === 'write') {
+        return prefix + [
+          'You are a professional technical blog writer.',
+          'Return ONLY markdown for the post body.',
+          'Do not include YAML frontmatter and do not wrap the answer in code fences.',
+          `Task: ${instruction}`
+        ].join('\n');
+      }
+
+      return prefix + [
+        'You are a markdown editor for blog posts.',
+        'Modify the markdown according to the instruction and return ONLY the updated markdown body.',
+        'Do not include YAML frontmatter and do not wrap the answer in code fences.',
+        `Instruction: ${instruction}`,
+        '',
+        'Current markdown:',
+        markdown || ''
+      ].join('\n');
+    },
+    normalizeOllamaOutput(text) {
+      return String(text || '')
+        .trim()
+        .replace(/^```(?:markdown|md)?\s*/i, '')
+        .replace(/\s*```$/, '')
+        .trim();
+    },
+    parseJsonFromOllama(text) {
+      const raw = String(text || '').trim();
+      if (!raw) return null;
+
+      const cleaned = raw
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/, '')
+        .trim();
+
+      try {
+        return JSON.parse(cleaned);
+      } catch (_) {
+        const start = cleaned.indexOf('{');
+        const end = cleaned.lastIndexOf('}');
+        if (start !== -1 && end !== -1 && end > start) {
+          try {
+            return JSON.parse(cleaned.slice(start, end + 1));
+          } catch (__unused) {
+            return null;
+          }
+        }
+        return null;
+      }
+    },
+    normalizeMetadataFromAI(payload) {
+      if (!payload || typeof payload !== 'object') return null;
+
+      const next = { ...this.editableMetadata };
+      if (typeof payload.title === 'string' && payload.title.trim()) {
+        next.title = payload.title.trim();
+      }
+      if (typeof payload.description === 'string' && payload.description.trim()) {
+        next.description = payload.description.trim();
+      }
+      if (Array.isArray(payload.tags)) {
+        next.tags = payload.tags
+          .map((tag) => String(tag || '').trim())
+          .filter(Boolean)
+          .slice(0, 8);
+      }
+      if (typeof payload.draft === 'boolean') {
+        next.draft = payload.draft;
+      }
+      if (typeof payload.pin === 'boolean') {
+        next.pin = payload.pin;
+      }
+      if (typeof payload.publishDate === 'string' && payload.publishDate.trim()) {
+        next.publishDate = payload.publishDate.trim();
+      }
+      if (typeof payload.updatedDate === 'string' && payload.updatedDate.trim()) {
+        next.updatedDate = payload.updatedDate.trim();
+      }
+
+      if (!next.publishDate) {
+        next.publishDate = this.formatMetaDate();
+      }
+      next.updatedDate = this.formatMetaDate();
+
+      return next;
+    },
+    async autocompleteMetadataWithAI() {
+      if (!this.selected) {
+        this.$refs.toast.warning('Select or create a post first');
+        return;
+      }
+
+      const markdown = String(this.contentWithoutMetadata || '').trim();
+      if (!markdown) {
+        this.$refs.toast.warning('Write post content first to generate metadata');
+        return;
+      }
+
+      const { baseUrl, model, masterPrompt } = this.getOllamaSettings();
+      if (!baseUrl || !model) {
+        this.$refs.toast.error('Set "Ollama URL" and "Ollama model" in Settings');
+        return;
+      }
+
+      this.aiIsLoading = true;
+      this.$refs.toast.info('Generating metadata from post context...');
+
+      try {
+        const prompt = [
+          masterPrompt ? `Master instruction (always follow): ${masterPrompt}` : '',
+          'You generate blog post metadata from markdown content.',
+          'Return ONLY valid JSON with fields: title, description, tags, draft, pin, publishDate, updatedDate.',
+          'Date format must be: DD MMM YYYY (example: 12 Apr 2026).',
+          'tags must be an array of short strings.',
+          'Do not include markdown, comments, or code fences.',
+          '',
+          'Markdown content:',
+          markdown,
+          '',
+          'Current metadata context (can be improved):',
+          JSON.stringify(this.editableMetadata || {})
+        ].filter(Boolean).join('\n');
+
+        const response = await fetch(`${baseUrl}/api/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model,
+            prompt,
+            stream: false
+          })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || data.message || 'Ollama request failed');
+        }
+
+        const parsed = this.parseJsonFromOllama(data.response);
+        if (!parsed) {
+          throw new Error('Could not parse metadata JSON from Ollama');
+        }
+
+        const nextMetadata = this.normalizeMetadataFromAI(parsed);
+        if (!nextMetadata) {
+          throw new Error('Invalid metadata payload from Ollama');
+        }
+
+        this.updateMetadata(nextMetadata);
+        this.$refs.toast.success('Metadata auto-completed from post content');
+      } catch (error) {
+        console.log('Ollama metadata autocomplete error', error);
+        this.$refs.toast.error(`Metadata autocomplete failed: ${error.message || 'Request failed'}`);
+      } finally {
+        this.aiIsLoading = false;
+      }
+    },
+    async applyOllama(mode) {
+      if (!this.selected) {
+        this.$refs.toast.warning('Select or create a post first');
+        return;
+      }
+
+      const instruction = String(this.aiPrompt || '').trim();
+      if (!instruction) {
+        this.$refs.toast.warning('Enter AI instruction first');
+        return;
+      }
+
+      const { baseUrl, model, masterPrompt } = this.getOllamaSettings();
+      if (!baseUrl || !model) {
+        this.$refs.toast.error('Set "Ollama URL" and "Ollama model" in Settings');
+        return;
+      }
+
+      if (mode === 'modify' && !String(this.contentWithoutMetadata || '').trim()) {
+        this.$refs.toast.warning('No markdown content to modify');
+        return;
+      }
+
+      this.aiIsLoading = true;
+      this.$refs.toast.info(`Requesting ${model} via Ollama...`);
+
+      try {
+        const prompt = this.buildOllamaPrompt(mode, instruction, this.contentWithoutMetadata, masterPrompt);
+        const response = await fetch(`${baseUrl}/api/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model,
+            prompt,
+            stream: false
+          })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || data.message || 'Ollama request failed');
+        }
+
+        const aiMarkdown = this.normalizeOllamaOutput(data.response);
+        if (!aiMarkdown) {
+          throw new Error('Ollama returned empty response');
+        }
+
+        this.contentWithoutMetadata = aiMarkdown;
+
+        if (this.showMetadataInEditor) {
+          this.editorContent = this.generateYAMLFrontmatter(this.editableMetadata, aiMarkdown);
+        } else {
+          this.editorContent = aiMarkdown;
+        }
+
+        this.renderFile();
+        this.$refs.toast.success(mode === 'write' ? 'Post draft generated by Ollama' : 'Post updated by Ollama');
+      } catch (error) {
+        console.log('Ollama error', error);
+        this.$refs.toast.error(`Ollama error: ${error.message || 'Request failed'}`);
+      } finally {
+        this.aiIsLoading = false;
+      }
+    },
     handleMouseDown(event) {
       if (event.button !== 0) return; // Only left mouse button
       this.isResizing = true;
@@ -562,7 +808,7 @@ export default {
           },
           body: JSON.stringify({
             message: `Adding/Updating file ${filePath}`,
-            content: btoa(contentToSave),
+            content: this.toBase64Utf8(contentToSave),
             sha: this.selected.sha || null,
             branch: this.branch,
             owner: this.username,
@@ -624,7 +870,7 @@ export default {
           },
           body: JSON.stringify({
             message: `Deleting file ${filePath}`,
-            content: btoa(this.$refs['editor'].value),
+            content: this.toBase64Utf8(this.$refs['editor'].value),
             sha: fileSha,
             branch: this.branch,
             owner: this.username,
@@ -662,6 +908,19 @@ export default {
         reader.onload = () => resolve(reader.result);
         reader.onerror = reject;
       })
+    },
+    toBase64Utf8(text) {
+      const value = String(text ?? '');
+      const bytes = new TextEncoder().encode(value);
+      let binary = '';
+      const chunkSize = 0x8000;
+
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        const chunk = bytes.subarray(i, i + chunkSize);
+        binary += String.fromCharCode(...chunk);
+      }
+
+      return btoa(binary);
     },
     async fileUpload({target}) {
       this.isSaving = true;
@@ -1052,6 +1311,68 @@ export default {
         @upload-cover="uploadCoverImage"
       />
 
+      <div v-if="selected && !preview && isAIConfigured()" class="border-b border-textColor/10 bg-bgColor">
+        <button
+          @click="isAIPanelCollapsed = !isAIPanelCollapsed"
+          class="w-full px-4 py-3 flex items-center justify-between hover:bg-textColor/5 transition-colors"
+        >
+          <h3 class="text-sm font-semibold text-accent-2 flex items-center gap-2">
+            <span>AI Assistant</span>
+          </h3>
+          <svg class="w-5 h-5 text-textColor/70 transition-transform" :class="{ 'rotate-180': !isAIPanelCollapsed }" fill="none"
+            stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <div v-show="!isAIPanelCollapsed" class="px-4 pb-4">
+          <label class="block text-xs text-textColor/70 mb-1">Instruction</label>
+          <textarea
+            v-model="aiPrompt"
+            rows="3"
+            placeholder="Describe what AI should do with this post..."
+            class="w-full px-3 py-2 text-sm bg-bgColor text-textColor border border-textColor/20 rounded focus:border-accent transition-colors resize-y"
+          ></textarea>
+
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              @click="applyOllama('write')"
+              :disabled="aiIsLoading || !aiPrompt.trim()"
+              class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Generate new markdown content with Ollama"
+            >
+              AI Write
+            </button>
+            <button
+              @click="applyOllama('modify')"
+              :disabled="aiIsLoading || !aiPrompt.trim()"
+              class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Rewrite current markdown content with Ollama"
+            >
+              AI Modify
+            </button>
+            <button
+              @click="autocompleteMetadataWithAI"
+              :disabled="aiIsLoading"
+              class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Auto-complete metadata from post content"
+            >
+              AI Meta
+            </button>
+          </div>
+
+          <div v-if="aiIsLoading" class="mt-3 border border-accent/30 rounded p-3 bg-accent/5">
+            <div class="flex items-center gap-2 text-sm text-accent">
+              <LoadingSpinner size="sm" color="accent" />
+              <span>AI is processing your request...</span>
+            </div>
+            <div class="mt-2 h-1.5 w-full overflow-hidden rounded bg-textColor/10">
+              <div class="ai-progress h-full w-1/3 bg-accent"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div v-if="!selected" class="flex-1 flex items-center justify-center text-textColor/60 text-lg">
         Choose or create a post
       </div>
@@ -1068,6 +1389,68 @@ export default {
             @update:metadata="updateMetadata"
             @upload-cover="uploadCoverImage"
           />
+
+          <div v-if="selected && isAIConfigured()" class="border-b border-textColor/10 bg-bgColor">
+            <button
+              @click="isAIPanelCollapsed = !isAIPanelCollapsed"
+              class="w-full px-4 py-3 flex items-center justify-between hover:bg-textColor/5 transition-colors"
+            >
+              <h3 class="text-sm font-semibold text-accent-2 flex items-center gap-2">
+                <span>AI Assistant</span>
+              </h3>
+              <svg class="w-5 h-5 text-textColor/70 transition-transform" :class="{ 'rotate-180': !isAIPanelCollapsed }" fill="none"
+                stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            <div v-show="!isAIPanelCollapsed" class="px-4 pb-4">
+              <label class="block text-xs text-textColor/70 mb-1">Instruction</label>
+              <textarea
+                v-model="aiPrompt"
+                rows="3"
+                placeholder="Describe what AI should do with this post..."
+                class="w-full px-3 py-2 text-sm bg-bgColor text-textColor border border-textColor/20 rounded focus:border-accent transition-colors resize-y"
+              ></textarea>
+
+              <div class="mt-3 flex flex-wrap gap-2">
+                <button
+                  @click="applyOllama('write')"
+                  :disabled="aiIsLoading || !aiPrompt.trim()"
+                  class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Generate new markdown content with Ollama"
+                >
+                  AI Write
+                </button>
+                <button
+                  @click="applyOllama('modify')"
+                  :disabled="aiIsLoading || !aiPrompt.trim()"
+                  class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Rewrite current markdown content with Ollama"
+                >
+                  AI Modify
+                </button>
+                <button
+                  @click="autocompleteMetadataWithAI"
+                  :disabled="aiIsLoading"
+                  class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Auto-complete metadata from post content"
+                >
+                  AI Meta
+                </button>
+              </div>
+
+              <div v-if="aiIsLoading" class="mt-3 border border-accent/30 rounded p-3 bg-accent/5">
+                <div class="flex items-center gap-2 text-sm text-accent">
+                  <LoadingSpinner size="sm" color="accent" />
+                  <span>AI is processing your request...</span>
+                </div>
+                <div class="mt-2 h-1.5 w-full overflow-hidden rounded bg-textColor/10">
+                  <div class="ai-progress h-full w-1/3 bg-accent"></div>
+                </div>
+              </div>
+            </div>
+          </div>
           
           <!-- Editor -->
           <div class="relative flex-1 overflow-hidden border-b border-textColor/10">
@@ -1165,4 +1548,17 @@ export default {
   </main>
 </template>
 
-<style scoped></style>
+<style scoped>
+.ai-progress {
+  animation: ai-progress 1.2s linear infinite;
+}
+
+@keyframes ai-progress {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+</style>
