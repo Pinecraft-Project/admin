@@ -7,37 +7,82 @@
   src: url(@/assets/fonts/Ubuntu.ttf);
 }
 
+@layer base {
+  :root,
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --theme-bg: 0deg 0% 98%;
+    --theme-link: 172deg 18% 41%;
+    --theme-text: 203deg 11% 15%;
+    --theme-accent: 351deg 66% 48%;
+    --theme-accent-2: 0deg 0% 7%;
+    --theme-quote: 351deg 66% 48%;
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --theme-bg: 210deg 6% 12%;
+    --theme-link: 330deg 49% 67%;
+    --theme-text: 220deg 3% 79%;
+    --theme-accent: 159deg 64% 45%;
+    --theme-accent-2: 0deg 0% 93%;
+    --theme-quote: 102deg 100% 86%;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: hsl(var(--theme-bg));
+    color: hsl(var(--theme-text));
+    font-family: 'ui-monospace', 'SFMono-Regular', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace;
+  }
+}
+
 * {
   margin: 0px;
   padding: 0px;
   box-sizing: border-box;
-
-  -webkit-touch-callout: none; /* iOS Safari */
-    -webkit-user-select: none; /* Safari */
-     -khtml-user-select: none; /* Konqueror HTML */
-       -moz-user-select: none; /* Old versions of Firefox */
-        -ms-user-select: none; /* Internet Explorer/Edge */
-            user-select: none; /* Non-prefixed version, currently
-                                  supported by Chrome, Edge, Opera and Firefox */
 }
 
 *:focus {
   outline: none;
 }
 
-html, body{  
+html, body {  
   max-width: 100vw;
   width: 100%;  
   min-height: 100vh;
   height: 100%;
   overflow: hidden;
-  font-family: "Ubuntu";
 }
 
-.shadow {
-  text-shadow: 8px 8px 24px black;
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
-.shadow-box {
-  -webkit-filter: drop-shadow(8px 8px 28px black);
-  filter: drop-shadow(8px 8px 28px black);
+
+::-webkit-scrollbar-track {
+  background: hsl(var(--theme-bg));
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--theme-accent) / 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--theme-accent) / 0.5);
+}
+
+.cactus-link {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cactus-link:hover {
+  text-decoration-color: hsl(var(--theme-link));
+  text-decoration-thickness: 2px;
 }

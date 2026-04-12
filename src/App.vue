@@ -8,6 +8,6 @@ import { RouterLink, RouterView } from 'vue-router'
 
 <style>
 body {
-  background-color: rgba(127, 255, 212, 0.103);
+  overflow: hidden;
 }
 </style>
