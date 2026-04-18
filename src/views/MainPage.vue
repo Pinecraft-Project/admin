@@ -99,12 +99,15 @@ export default {
       galleryUploadDate: 'Без дати',
       galleryUploadPin: false,
       galleryUploadDraft: false,
-      galleryUploadPreview: ''
+      galleryUploadPreview: '',
+      repoFileCache: {},
+      listCache: {},
+      loadRequestId: 0
     };
   },
   mounted: async function() {
     this.syncCollectionPath();
-    this.loadList()
+    this.loadList(false, true)
     
     const externalScript = document.createElement('script')
     externalScript.setAttribute('src', 'https://cdn.jsdelivr.net/npm/marked/marked.min.js')
@@ -275,12 +278,24 @@ export default {
       const normalized = this.normalizeRepoPath(repoPath);
       return `https://raw.githubusercontent.com/${this.username}/${this.repo}/${this.branch}/${normalized}`;
     },
-    async fetchRepoText(filePath) {
-      const response = await fetch(this.getRawGitHubUrl(filePath));
+    async fetchRepoText(filePath, force = false) {
+      const normalizedPath = this.normalizeRepoPath(filePath);
+      if (!force && this.repoFileCache[normalizedPath]) {
+        return this.repoFileCache[normalizedPath];
+      }
+
+      const response = await fetch(this.getRawGitHubUrl(normalizedPath));
       if (!response.ok) {
         throw new Error('Failed to load repository file');
       }
-      return await response.text();
+
+      const text = await response.text();
+      this.repoFileCache[normalizedPath] = text;
+      return text;
+    },
+    clearDataCache() {
+      this.repoFileCache = {};
+      this.listCache = {};
     },
     async saveRepoTextFile(filePath, contentToSave, customMessage = '') {
       const normalizedPath = this.normalizeRepoPath(filePath);
@@ -327,6 +342,8 @@ export default {
         throw new Error(error.message || 'Save failed');
       }
 
+      this.repoFileCache[normalizedPath] = String(contentToSave || '');
+      this.listCache = {};
       return await response.json().catch(() => ({}));
     },
     getRelativeAssetPath(filename) {
@@ -397,7 +414,7 @@ export default {
         await this.saveRepoTextFile(this.getGalleryMetadataPath(), metadataContent, `Update gallery metadata for ${filename}`);
         this.assetPreviewVersion += 1;
         this.closeGalleryUploadModal();
-        await this.loadList();
+        await this.loadList(true, true);
         await this.edit(filename);
         this.$refs.toast.success('Gallery image uploaded');
       } catch (error) {
@@ -476,7 +493,7 @@ export default {
       this.contentType = type;
       this.syncCollectionPath(true);
       this.clearSelected();
-      this.loadList();
+      this.loadList(false, true);
     },
     getDefaultMetadata(slug) {
       const title = slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -637,6 +654,10 @@ export default {
       const post = this.posts.find(post => post.name == file);
       if (!post) return;
 
+      if (this.selected?.name === post.name && this.selected?.path === post.path) {
+        return;
+      }
+
       if (this.isMediaMode()) {
         this.selected = post;
         this.preview = false;
@@ -719,7 +740,16 @@ export default {
         this.isLoading = false;
       }
     },
-    async loadList() {
+    async loadList(force = false, silent = false) {
+      const requestId = ++this.loadRequestId;
+      const cacheKey = `${this.contentType}:${this.path || ''}:${this.branch || ''}`;
+
+      if (!force && this.listCache[cacheKey]) {
+        this.posts = this.listCache[cacheKey];
+        this.filtered = this.listCache[cacheKey];
+        return;
+      }
+
       if (this.isConfigMode()) {
         if (!(this.token && this.username && this.repo && this.branch)) {
           this.url = false;
@@ -730,6 +760,7 @@ export default {
         const homeEntries = this.getHomeEntries();
         this.posts = homeEntries;
         this.filtered = homeEntries;
+        this.listCache[cacheKey] = homeEntries;
         return;
       }
 
@@ -775,9 +806,13 @@ export default {
                 return titleA.localeCompare(titleB, 'uk');
               });
 
+            if (requestId !== this.loadRequestId) return;
             this.posts = mediaFiles;
             this.filtered = mediaFiles;
-            this.$refs.toast.success(`Loaded ${mediaFiles.length} ${this.getCurrentPreset().label.toLowerCase()}`);
+            this.listCache[cacheKey] = mediaFiles;
+            if (!silent) {
+              this.$refs.toast.success(`Loaded ${mediaFiles.length} ${this.getCurrentPreset().label.toLowerCase()}`);
+            }
             return;
           }
 
@@ -825,8 +860,12 @@ export default {
             return dateB - dateA;
           });
           
+          if (requestId !== this.loadRequestId) return;
           this.filtered = this.posts;
-          this.$refs.toast.success(`Loaded ${this.posts.length} ${this.getCurrentPreset().label.toLowerCase()}`);
+          this.listCache[cacheKey] = this.posts;
+          if (!silent) {
+            this.$refs.toast.success(`Loaded ${this.posts.length} ${this.getCurrentPreset().label.toLowerCase()}`);
+          }
         } else {
           this.$refs.toast.error('Failed to load files from GitHub');
         }
@@ -1343,7 +1382,7 @@ export default {
 
         await this.saveRepoTextFile(targetPath, contentToSave, message);
         this.$refs.toast.success(this.isGalleryMode() ? 'Gallery metadata saved' : 'File saved successfully! 🎉');
-        await this.loadList();
+        await this.loadList(true, true);
       } catch (error) {
         console.log('Error saving file', error);
         this.$refs.toast.error(`Save failed: ${error.message || 'Unknown error'}`);
@@ -1407,7 +1446,7 @@ export default {
           console.log('delete successfully');
           this.$refs.toast.success('File deleted successfully');
           this.clearSelected();
-          await this.loadList();
+          await this.loadList(true, true);
         } else {
           const error = await response.json();
           this.$refs.toast.error(`Delete failed: ${error.message || 'Unknown error'}`);
@@ -1483,7 +1522,7 @@ export default {
         });
 
         this.assetPreviewVersion += 1;
-        await this.loadList();
+        await this.loadList(true, true);
         await this.edit(this.selected.name);
         this.$refs.toast.success('Image replaced successfully');
       } catch (error) {
@@ -1570,7 +1609,7 @@ export default {
         this.assetPreviewVersion += 1;
         this.$refs.toast.success(`Uploaded ${uploadedCount} image(s) successfully`);
         if (this.isMediaMode() || this.isConfigMode()) {
-          await this.loadList();
+          await this.loadList(true, true);
         }
       }
       if (failedCount > 0) {

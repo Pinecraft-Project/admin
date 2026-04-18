@@ -9,7 +9,6 @@ const validFields = ref({
   token: false,
   username: false,
   repo: false,
-  path: false,
   branch: false
 });
 
@@ -17,7 +16,6 @@ const githubToken = ref(window.localStorage.getItem('Token') || '');
 const githubUsername = ref(window.localStorage.getItem('Github username') || '');
 const githubRepo = ref(window.localStorage.getItem('Repo name') || '');
 const githubBranch = ref(window.localStorage.getItem('Branch') || '');
-const githubPath = ref(window.localStorage.getItem('Path') || '');
 const githubRepos = ref([]);
 const githubReposLoading = ref(false);
 const githubReposError = ref('');
@@ -28,6 +26,8 @@ const githubBranchesLoading = ref(false);
 const githubBranchesError = ref('');
 let githubBranchRefreshTimer = null;
 let githubRepoRefreshTimer = null;
+let lastGithubReposKey = '';
+let lastGithubBranchesKey = '';
 const showSaveConfirmModal = ref(false);
 const pendingChanges = ref([]);
 const initialSettings = ref({});
@@ -137,6 +137,13 @@ const refreshGithubBranches = async () => {
 
   if (!token || !username || !repo) {
     githubBranches.value = [];
+    lastGithubBranchesKey = '';
+    updateValidation('branch', !!githubBranch.value);
+    return;
+  }
+
+  const requestKey = `${username}/${repo}`;
+  if (requestKey === lastGithubBranchesKey && githubBranches.value.length) {
     updateValidation('branch', !!githubBranch.value);
     return;
   }
@@ -161,6 +168,7 @@ const refreshGithubBranches = async () => {
       : [];
 
     githubBranches.value = branches;
+    lastGithubBranchesKey = requestKey;
 
     if (branches.length && !branches.includes(githubBranch.value)) {
       githubBranch.value = branches[0];
@@ -193,6 +201,13 @@ const refreshGithubRepos = async () => {
 
   if (!token || !username) {
     githubRepos.value = [];
+    lastGithubReposKey = '';
+    updateValidation('repo', !!githubRepo.value);
+    return;
+  }
+
+  const requestKey = username;
+  if (requestKey === lastGithubReposKey && githubRepos.value.length) {
     updateValidation('repo', !!githubRepo.value);
     return;
   }
@@ -220,6 +235,7 @@ const refreshGithubRepos = async () => {
       : [];
 
     githubRepos.value = repos;
+    lastGithubReposKey = requestKey;
 
     if (!githubRepo.value && repos.length) {
       githubRepo.value = repos[0];
@@ -297,10 +313,6 @@ const selectRepo = (repoName) => {
   scheduleRefreshGithubBranches();
 };
 
-const onPathInput = (value) => {
-  githubPath.value = value;
-};
-
 const onBranchChange = (event) => {
   const value = event?.target?.value || '';
   githubBranch.value = value;
@@ -312,7 +324,6 @@ const getCurrentSettings = () => ({
   token: String(githubToken.value || ''),
   username: String(githubUsername.value || ''),
   repo: String(githubRepo.value || ''),
-  path: String(githubPath.value || ''),
   branch: String(githubBranch.value || ''),
   ollamaUrl: String(ollamaUrl.value || ''),
   ollamaModel: String(ollamaModel.value || ''),
@@ -332,9 +343,6 @@ const getPendingChanges = () => {
   }
   if (next.repo !== prev.repo) {
     changes.push(`Repository: ${prev.repo || '(empty)'} -> ${next.repo || '(empty)'}`);
-  }
-  if (next.path !== prev.path) {
-    changes.push(`Posts path: ${prev.path || '(empty)'} -> ${next.path || '(empty)'}`);
   }
   if (next.branch !== prev.branch) {
     changes.push(`Branch: ${prev.branch || '(empty)'} -> ${next.branch || '(empty)'}`);
@@ -442,18 +450,6 @@ onMounted(() => {
           Repository name only, without URL. Example: astro-blog.
         </p>
 
-        <Input 
-          label="Path" 
-          placeholder="path/to/your/posts" 
-          :required="true"
-          :value="githubPath"
-          @input="onPathInput"
-          errorMessage="Path to posts is required"
-          @validate="(valid) => updateValidation('path', valid)"
-        />
-        <p class="text-textColor/60 text-xs -mt-3 mb-5">
-          Folder path inside repository where posts are stored. Example: src/content/blog
-        </p>
         <div class="mb-5">
           <label class="block text-xs bg-accent text-white rounded px-1 w-max mb-1">
             Branch *
