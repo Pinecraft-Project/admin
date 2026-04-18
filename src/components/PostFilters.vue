@@ -152,7 +152,7 @@ const hasActiveFilters = computed(() => {
     <input 
       v-model="searchQuery"
       type="text"
-      placeholder="Search posts..."
+      placeholder="Search entries..."
       class="w-full mb-3 px-3 py-2 text-sm bg-bgColor text-textColor border border-textColor/20 rounded focus:border-accent transition-colors"
     />
 

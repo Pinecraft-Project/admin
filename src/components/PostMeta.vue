@@ -45,9 +45,17 @@ const hasMetadata = computed(() => {
       <p v-if="metadata.publishDate" class="font-semibold text-textColor">
         {{ formatDate(metadata.publishDate) }}
       </p>
+
+      <p v-else-if="metadata.date" class="font-semibold text-textColor">
+        {{ metadata.date }}
+      </p>
       
       <span v-if="metadata.updatedDate" class="rounded-lg bg-quote/10 px-2 py-1 text-quote text-xs">
         Last Updated: {{ formatDate(metadata.updatedDate) }}
+      </span>
+
+      <span v-if="metadata.badge" class="rounded-lg bg-accent/10 px-2 py-1 text-accent text-xs">
+        {{ metadata.badge }}
       </span>
     </div>
 

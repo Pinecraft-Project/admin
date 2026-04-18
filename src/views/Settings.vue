@@ -371,11 +371,11 @@ onMounted(() => {
           <ThemeToggle />
         </div>
         <p class="text-textColor/70 text-sm md:text-base">
-          Configure GitHub and Ollama integration. Changes are stored locally in your browser and applied to the editor.
+          Configure GitHub and Ollama integration. The Pinecraft repository defaults are prefilled; usually you only need a GitHub token.
         </p>
 
         <div class="mt-4 rounded border border-yellow-500/40 bg-yellow-500/10 p-3 text-xs text-yellow-200">
-          GitHub token permissions required: Contents (Read and write) and Workflows (Read and write).
+          GitHub token permission required: Contents (Read and write).
         </div>
       </div>
 
@@ -393,7 +393,7 @@ onMounted(() => {
           @validate="(valid) => updateValidation('token', valid)"
         />
         <p class="text-textColor/60 text-xs -mt-3 mb-5">
-          GitHub Personal Access Token. Required permissions: Contents (Read and write), Workflows (Read and write). Path: GitHub -> Settings -> Developer settings -> Personal access tokens -> Fine-grained tokens -> Generate new token.
+          GitHub Personal Access Token. Required permission: Contents (Read and write). Path: GitHub -> Settings -> Developer settings -> Personal access tokens -> Fine-grained tokens -> Generate new token.
         </p>
 
         <Input 

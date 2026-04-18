@@ -6,6 +6,9 @@ import PostMeta from '@/components/PostMeta.vue';
 import PostFilters from '@/components/PostFilters.vue';
 import ContextMenu from '@/components/ContextMenu.vue';
 import MetadataEditor from '@/components/MetadataEditor.vue';
+import SiteSettingsEditor from '@/components/SiteSettingsEditor.vue';
+import HomeContentEditor from '@/components/HomeContentEditor.vue';
+import GalleryMetadataEditor from '@/components/GalleryMetadataEditor.vue';
 import matter from 'gray-matter';
 
 export default {
@@ -16,7 +19,10 @@ export default {
     PostMeta,
     PostFilters,
     ContextMenu,
-    MetadataEditor
+    MetadataEditor,
+    SiteSettingsEditor,
+    HomeContentEditor,
+    GalleryMetadataEditor
   },
   data() {
     return {
@@ -25,7 +31,46 @@ export default {
       path: window.localStorage.getItem("Path") || false,
       repo: window.localStorage.getItem("Repo name") || false,
       token: window.localStorage.getItem("Token") || false,
-      regImg: /!\[.*\]\((\..*)\)/gm ,
+      contentType: window.localStorage.getItem("Content Type") || 'post',
+      collectionPresets: {
+        home: {
+          label: 'Home',
+          singleLabel: 'Home item',
+          path: 'src/site.config.json',
+          kind: 'config'
+        },
+        post: {
+          label: 'Posts',
+          singleLabel: 'Post',
+          path: 'src/content/post',
+          kind: 'content'
+        },
+        event: {
+          label: 'Events',
+          singleLabel: 'Event',
+          path: 'src/content/event',
+          kind: 'content'
+        },
+        wiki: {
+          label: 'Wiki',
+          singleLabel: 'Wiki page',
+          path: 'src/content/wiki',
+          kind: 'content'
+        },
+        images: {
+          label: 'Images',
+          singleLabel: 'Image',
+          path: 'src/assets/images',
+          kind: 'media'
+        },
+        gallery: {
+          label: 'Gallery',
+          singleLabel: 'Gallery image',
+          path: 'src/assets/gallery',
+          kind: 'media'
+        }
+      },
+      regImg: /!\[.*?\]\(((?!https?:\/\/|\/)[^)]+)\)/gm,
       posts: [],
       filtered: [],
       url: "",
@@ -45,10 +90,20 @@ export default {
       newPostSlug: '',
       aiPrompt: '',
       aiIsLoading: false,
-      isAIPanelCollapsed: true
+      isAIPanelCollapsed: true,
+      assetPreviewVersion: 0,
+      galleryMetadataMap: {},
+      showGalleryUploadModal: false,
+      galleryUploadFile: null,
+      galleryUploadTitle: '',
+      galleryUploadDate: 'Без дати',
+      galleryUploadPin: false,
+      galleryUploadDraft: false,
+      galleryUploadPreview: ''
     };
   },
   mounted: async function() {
+    this.syncCollectionPath();
     this.loadList()
     
     const externalScript = document.createElement('script')
@@ -94,6 +149,384 @@ export default {
         .map((part) => this.normalizeRepoPath(part))
         .filter(Boolean)
         .join('/');
+    },
+    getCurrentPreset() {
+      return this.collectionPresets[this.contentType] || this.collectionPresets.post;
+    },
+    isMediaMode() {
+      return this.getCurrentPreset()?.kind === 'media';
+    },
+    isConfigMode() {
+      return this.getCurrentPreset()?.kind === 'config';
+    },
+    isImageFile(name = '') {
+      return /\.(png|jpe?g|webp|gif|svg)$/i.test(String(name || ''));
+    },
+    isGalleryMode() {
+      return this.contentType === 'gallery';
+    },
+    isHomeSettingsSelection() {
+      return this.isConfigMode() && this.selected?.path === 'src/site.config.json';
+    },
+    isHomeTextSelection() {
+      return this.isConfigMode() && this.selected?.path === 'src/data/landing.content.json';
+    },
+    canOpenCreateModal() {
+      return !this.isMediaMode() && !this.isConfigMode();
+    },
+    canSaveSelected() {
+      if (!this.selected) return false;
+      if (this.isGalleryMode()) return true;
+      if (this.isMediaMode()) return false;
+      if (this.isConfigMode() && this.isImageFile(this.selected.name)) return false;
+      return true;
+    },
+    canDeleteSelected() {
+      return !!(this.selected && this.selected.path && !this.isConfigMode());
+    },
+    canUploadCurrentSelection() {
+      if (this.isGalleryMode()) {
+        return !!(this.selected && this.isImageFile(this.selected.name));
+      }
+      if (this.contentType === 'images') {
+        return !!(this.selected && this.isImageFile(this.selected.name));
+      }
+      if (this.isMediaMode()) return true;
+      if (this.isConfigMode()) {
+        return !!(this.selected && this.isImageFile(this.selected.name));
+      }
+      return !!this.selected;
+    },
+    canReplaceCurrentSelection() {
+      if (this.contentType === 'images' || this.isGalleryMode()) {
+        return true;
+      }
+      if (this.isMediaMode()) {
+        return !!(this.selected && this.isImageFile(this.selected.name));
+      }
+      if (this.isConfigMode()) {
+        return !!(this.selected && this.isImageFile(this.selected.name));
+      }
+      return this.canOpenCreateModal();
+    },
+    getPrimaryActionLabel() {
+      if (this.isGalleryMode()) {
+        return 'Add to Gallery';
+      }
+      if (this.contentType === 'images') {
+        return 'Upload Image';
+      }
+      if (this.isMediaMode()) {
+        return this.selected ? 'Reupload Selected Image' : 'Select Image to Replace';
+      }
+      if (this.isConfigMode()) {
+        return this.selected && this.isImageFile(this.selected.name) ? 'Replace Image' : 'Select Map Preview';
+      }
+      return `New ${this.getCurrentPreset().singleLabel}`;
+    },
+    getUploadButtonLabel() {
+      if (this.isGalleryMode()) return 'Change';
+      if (this.contentType === 'images') return 'Change';
+      if (this.isMediaMode()) return 'Change';
+      if (this.isConfigMode()) return 'Replace Image';
+      return 'Add Image';
+    },
+    normalizeGalleryMetadataEntry(entry = {}, fileName = '') {
+      const fallbackTitle = String(fileName || '')
+        .replace(/\.[^.]+$/, '')
+        .replace(/[+_-]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/\b\w/g, (char) => char.toUpperCase());
+
+      return {
+        title: String(entry?.title || fallbackTitle || ''),
+        date: String(entry?.date || 'Без дати'),
+        pin: entry?.pin === true,
+        draft: entry?.draft === true
+      };
+    },
+    getHomeEntries() {
+      return [
+        {
+          name: 'site.config.json',
+          path: 'src/site.config.json',
+          type: 'file',
+          metadata: { title: 'Site Settings', description: 'Main site title, description and public links' }
+        },
+        {
+          name: 'landing.content.json',
+          path: 'src/data/landing.content.json',
+          type: 'file',
+          metadata: { title: 'Home Text Content', description: 'Hero, map and join section texts' }
+        },
+        {
+          name: 'map-preview.png',
+          path: 'src/assets/images/map-preview.png',
+          type: 'file',
+          metadata: { title: 'Map Preview Image', description: 'Preview image used on the home page map card' }
+        }
+      ];
+    },
+    getAssetFolderPath() {
+      return this.isMediaMode() ? this.getCurrentPreset().path : 'src/assets/images';
+    },
+    getRawGitHubUrl(repoPath = '') {
+      const normalized = this.normalizeRepoPath(repoPath);
+      return `https://raw.githubusercontent.com/${this.username}/${this.repo}/${this.branch}/${normalized}`;
+    },
+    async fetchRepoText(filePath) {
+      const response = await fetch(this.getRawGitHubUrl(filePath));
+      if (!response.ok) {
+        throw new Error('Failed to load repository file');
+      }
+      return await response.text();
+    },
+    async saveRepoTextFile(filePath, contentToSave, customMessage = '') {
+      const normalizedPath = this.normalizeRepoPath(filePath);
+      const url = `https://api.github.com/repos/${this.username}/${this.repo}/contents/${normalizedPath}`;
+
+      const shaResponse = await fetch(url, {
+        headers: {
+          'Authorization': `token ${this.token}`,
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        }
+      });
+
+      let sha = null;
+      if (shaResponse.ok) {
+        const shaData = await shaResponse.json();
+        sha = shaData.sha;
+      }
+
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `token ${this.token}`,
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        },
+        body: JSON.stringify({
+          message: customMessage || `Adding/Updating file ${normalizedPath}`,
+          content: this.toBase64Utf8(contentToSave),
+          sha,
+          branch: this.branch,
+          owner: this.username,
+          repo: this.repo,
+          path: normalizedPath,
+          committer: {
+            name: this.username,
+            email: this.username + '@github.com'
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || 'Save failed');
+      }
+
+      return await response.json().catch(() => ({}));
+    },
+    getRelativeAssetPath(filename) {
+      return `../../assets/images/${filename}`;
+    },
+    getGalleryMetadataPath() {
+      return 'src/data/gallery.metadata.json';
+    },
+    buildGalleryMetadataContent(fileName, metadata) {
+      const nextMap = {
+        ...this.galleryMetadataMap,
+        [fileName]: this.normalizeGalleryMetadataEntry(metadata, fileName)
+      };
+      this.galleryMetadataMap = Object.fromEntries(
+        Object.entries(nextMap).sort(([a], [b]) => a.localeCompare(b, 'uk'))
+      );
+      return `${JSON.stringify(this.galleryMetadataMap, null, 2)}\n`;
+    },
+    openGalleryUploadModal() {
+      this.galleryUploadFile = null;
+      this.galleryUploadPreview = '';
+      this.galleryUploadTitle = '';
+      this.galleryUploadDate = 'Без дати';
+      this.galleryUploadPin = false;
+      this.galleryUploadDraft = false;
+      this.showGalleryUploadModal = true;
+    },
+    closeGalleryUploadModal() {
+      this.showGalleryUploadModal = false;
+      this.galleryUploadFile = null;
+      this.galleryUploadPreview = '';
+      this.galleryUploadTitle = '';
+      this.galleryUploadDate = 'Без дати';
+      this.galleryUploadPin = false;
+      this.galleryUploadDraft = false;
+    },
+    onGalleryUploadFileChange(event) {
+      const file = event?.target?.files?.[0];
+      if (!file) return;
+
+      this.galleryUploadFile = file;
+      this.galleryUploadTitle = this.normalizeGalleryMetadataEntry({}, file.name).title;
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        this.galleryUploadPreview = String(reader.result || '');
+      };
+      reader.readAsDataURL(file);
+    },
+    async confirmGalleryUpload() {
+      if (!this.galleryUploadFile) {
+        this.$refs.toast.warning('Choose an image first');
+        return;
+      }
+
+      this.isSaving = true;
+      try {
+        const { filename } = await this.uploadAssetFile(this.galleryUploadFile, {
+          directory: 'src/assets/gallery'
+        });
+
+        const metadataContent = this.buildGalleryMetadataContent(filename, {
+          title: this.galleryUploadTitle,
+          date: this.galleryUploadDate,
+          pin: this.galleryUploadPin,
+          draft: this.galleryUploadDraft
+        });
+        await this.saveRepoTextFile(this.getGalleryMetadataPath(), metadataContent, `Update gallery metadata for ${filename}`);
+        this.assetPreviewVersion += 1;
+        this.closeGalleryUploadModal();
+        await this.loadList();
+        await this.edit(filename);
+        this.$refs.toast.success('Gallery image uploaded');
+      } catch (error) {
+        console.log('Gallery upload failed', error);
+        this.$refs.toast.error(`Gallery upload failed: ${error.message || 'Upload failed'}`);
+      } finally {
+        this.isSaving = false;
+      }
+    },
+    async uploadAssetFile(file, options = {}) {
+      const extension = file.name.includes('.') ? file.name.split('.').pop() : (file.type.split('/')[1] || 'png');
+      const providedName = String(options.filename || file.name || '').trim();
+      const fallbackName = `image-${Date.now()}.${extension}`;
+      const finalName = (providedName || fallbackName).replace(/\s+/g, '-');
+      const directory = this.normalizeRepoPath(options.directory || this.getAssetFolderPath());
+      const path = this.joinRepoPath(directory, finalName);
+      const url = `https://api.github.com/repos/${this.username}/${this.repo}/contents/${path}`;
+
+      let sha = null;
+      const shaResponse = await fetch(url, {
+        headers: {
+          'Authorization': `token ${this.token}`,
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        }
+      });
+
+      if (shaResponse.ok) {
+        const shaData = await shaResponse.json();
+        sha = shaData.sha;
+      }
+
+      const content = await this.toBase64(file);
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `token ${this.token}`,
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+        body: JSON.stringify({
+          message: `Upload asset ${path}`,
+          content: content.split(',')[1],
+          sha,
+          branch: this.branch,
+          owner: this.username,
+          repo: this.repo,
+          path,
+          committer: {
+            name: this.username,
+            email: this.username + '@github.com'
+          },
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.message || 'Upload failed');
+      }
+
+      return { path, filename: finalName };
+    },
+    syncCollectionPath(force = false) {
+      const preset = this.getCurrentPreset();
+      const presetPaths = Object.values(this.collectionPresets).map((item) => item.path).filter(Boolean);
+
+      if (preset.path && (force || !this.path || presetPaths.includes(this.path))) {
+        this.path = preset.path;
+        window.localStorage.setItem('Path', preset.path);
+      }
+
+      window.localStorage.setItem('Content Type', this.contentType);
+    },
+    setContentType(type) {
+      if (!this.collectionPresets[type]) return;
+      this.contentType = type;
+      this.syncCollectionPath(true);
+      this.clearSelected();
+      this.loadList();
+    },
+    getDefaultMetadata(slug) {
+      const title = slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+      const today = this.formatMetaDate();
+
+      if (this.contentType === 'event') {
+        return {
+          title,
+          description: 'Опис події для анонсу. Додайте деталі, час проведення та основні винагороди для учасників.',
+          date: '20 Apr 2026 · 18:00 — 20:00',
+          bannerUrl: '',
+          imageUrl: '',
+          reward: '',
+          badge: 'Upcoming Event',
+          status: 'upcoming'
+        };
+      }
+
+      if (this.contentType === 'wiki') {
+        return {
+          title,
+          description: 'Короткий опис сторінки вікі для навігації та швидкого розуміння її вмісту.',
+          icon: '📄',
+          badge: 'Guide',
+          badgeColor: '#4ade80',
+          order: this.posts.length + 1
+        };
+      }
+
+      return {
+        title,
+        description: 'Чернетка опису для майбутнього допису. Додайте короткий анонс у межах опису сторінки.',
+        publishDate: today,
+        updatedDate: today,
+        tags: ['draft'],
+        draft: true,
+        pin: false,
+        ogImage: ''
+      };
+    },
+    getDefaultContent() {
+      if (this.contentType === 'event') {
+        return '# Нова подія\n\nОпишіть сюжет, час проведення та умови участі.\n';
+      }
+
+      if (this.contentType === 'wiki') {
+        return '# Нова сторінка вікі\n\nДодайте корисну інформацію для гравців.\n';
+      }
+
+      return '# Новий допис\n\nПочніть писати тут...\n';
     },
     generateUrl() {
       if (
@@ -152,10 +585,10 @@ export default {
       const exists = this.posts.some((post) => {
         const postName = String(post.name || '').toLowerCase();
         const postPath = String(post.path || '').toLowerCase();
-        return postName === slug || postName === `${slug}.md` || postPath.includes(`/${slug}/`);
+        return postName === slug || postName === `${slug}.md` || postPath.endsWith(`/${slug}.md`) || postPath.includes(`/${slug}/`);
       });
 
-      if (exists) return 'Post with this slug already exists';
+      if (exists) return 'Entry with this slug already exists';
       return '';
     },
     createNewPost() {
@@ -171,25 +604,15 @@ export default {
         return;
       }
 
-      const today = this.formatMetaDate();
-      this.editableMetadata = {
-        title: slug.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-        description: 'Draft description',
-        publishDate: today,
-        updatedDate: today,
-        tags: ['Draft'],
-        draft: true,
-        pin: false
-      };
-
-      this.contentWithoutMetadata = '# Draft Post\n\nWrite your content here...\n';
+      this.editableMetadata = this.getDefaultMetadata(slug);
+      this.contentWithoutMetadata = this.getDefaultContent();
       this.editorContent = this.contentWithoutMetadata;
       this.showMetadataInEditor = false;
       this.preview = false;
 
-      const filePath = this.joinRepoPath(this.path, slug, 'index.md');
+      const filePath = this.joinRepoPath(this.path, `${slug}.md`);
       this.selected = {
-        name: slug,
+        name: `${slug}.md`,
         path: filePath,
         type: 'file',
         sha: null,
@@ -205,16 +628,67 @@ export default {
       });
 
       this.closeCreatePostModal();
-      this.$refs.toast.success(`New draft created: ${slug}`);
+      this.$refs.toast.success(`New ${this.getCurrentPreset().singleLabel.toLowerCase()} draft created: ${slug}`);
     },
     previewSwich() {
       this.preview = !this.preview
     },
     async edit(file) {
-      const post = this.posts.find(post => post.name == file)
+      const post = this.posts.find(post => post.name == file);
+      if (!post) return;
+
+      if (this.isMediaMode()) {
+        this.selected = post;
+        this.preview = false;
+        this.previewHtml = '';
+        this.postMetadata = {};
+        this.editableMetadata = this.isGalleryMode()
+          ? this.normalizeGalleryMetadataEntry(post.metadata || {}, post.name)
+          : {};
+        this.contentWithoutMetadata = '';
+        this.editorContent = '';
+        this.$refs.toast.success(this.isGalleryMode() ? 'Gallery image selected' : 'Image selected');
+        return;
+      }
+
+      if (this.isConfigMode()) {
+        this.isLoading = true;
+        try {
+          this.selected = post;
+          this.preview = false;
+          this.previewHtml = '';
+          this.postMetadata = {};
+          this.editableMetadata = {};
+          this.showMetadataInEditor = false;
+
+          if (this.isImageFile(post.name)) {
+            this.contentWithoutMetadata = '';
+            this.editorContent = '';
+            this.$refs.toast.success('Home image selected');
+            return;
+          }
+
+          const content = await this.fetchRepoText(post.path);
+          if (content) {
+            this.contentWithoutMetadata = content;
+            this.editorContent = content;
+            this.titleSize();
+            this.$refs.toast.success('Config file loaded successfully');
+          } else {
+            this.$refs.toast.error('Failed to load config file');
+          }
+        } catch (error) {
+          console.log('Failed to load config file', error);
+          this.$refs.toast.error('Network error while loading config file');
+        } finally {
+          this.isLoading = false;
+        }
+        return;
+      }
+
       const file_url = post.type == 'file'
         ? post.download_url
-        : `https://raw.githubusercontent.com/${this.username}/${this.repo}/main/${this.joinRepoPath(this.path, file, 'index.md')}`
+        : `https://raw.githubusercontent.com/${this.username}/${this.repo}/${this.branch}/${this.joinRepoPath(this.path, file, 'index.md')}`
 
       this.isLoading = true;
       try {
@@ -247,6 +721,19 @@ export default {
       }
     },
     async loadList() {
+      if (this.isConfigMode()) {
+        if (!(this.token && this.username && this.repo && this.branch)) {
+          this.url = false;
+          return;
+        }
+        this.isLoading = false;
+        this.url = 'home://config';
+        const homeEntries = this.getHomeEntries();
+        this.posts = homeEntries;
+        this.filtered = homeEntries;
+        return;
+      }
+
       if (!(this.url = this.generateUrl())) return;
       this.isLoading = true;
       try {
@@ -257,13 +744,54 @@ export default {
         });
         if (response.ok) {
           const files = await response.json();
+
+          if (this.isMediaMode()) {
+            let metadataMap = {};
+            if (this.isGalleryMode()) {
+              try {
+                metadataMap = JSON.parse(await this.fetchRepoText(this.getGalleryMetadataPath()));
+              } catch (_error) {
+                metadataMap = {};
+              }
+            }
+
+            this.galleryMetadataMap = metadataMap;
+
+            const mediaFiles = files
+              .filter((file) => file.type === 'file' && this.isImageFile(file.name))
+              .filter((file) => !(this.contentType === 'images' && file.name === 'map-preview.png'))
+              .map((file) => ({
+                ...file,
+                metadata: this.isGalleryMode()
+                  ? this.normalizeGalleryMetadataEntry(metadataMap[file.name] || {}, file.name)
+                  : { title: file.name }
+              }))
+              .sort((a, b) => {
+                if (this.isGalleryMode()) {
+                  if (a.metadata?.pin && !b.metadata?.pin) return -1;
+                  if (!a.metadata?.pin && b.metadata?.pin) return 1;
+                }
+                const titleA = a.metadata?.title || a.name;
+                const titleB = b.metadata?.title || b.name;
+                return titleA.localeCompare(titleB, 'uk');
+              });
+
+            this.posts = mediaFiles;
+            this.filtered = mediaFiles;
+            this.$refs.toast.success(`Loaded ${mediaFiles.length} ${this.getCurrentPreset().label.toLowerCase()}`);
+            return;
+          }
+
+          const contentFiles = files.filter((file) => {
+            if (file.type === 'dir') return true;
+            return file.type === 'file' && file.name.endsWith('.md');
+          });
           
-          // Load metadata for all files in parallel
           const postsWithMetadata = await Promise.all(
-            files.map(async (file) => {
+            contentFiles.map(async (file) => {
               const file_url = file.type == 'file' 
                 ? file.download_url 
-                : `https://raw.githubusercontent.com/${this.username}/${this.repo}/main/${this.joinRepoPath(this.path, file.name, 'index.md')}`;
+                : `https://raw.githubusercontent.com/${this.username}/${this.repo}/${this.branch}/${this.joinRepoPath(this.path, file.name, 'index.md')}`;
               
               try {
                 const contentResponse = await fetch(file_url);
@@ -299,7 +827,7 @@ export default {
           });
           
           this.filtered = this.posts;
-          this.$refs.toast.success(`Loaded ${this.posts.length} posts`);
+          this.$refs.toast.success(`Loaded ${this.posts.length} ${this.getCurrentPreset().label.toLowerCase()}`);
         } else {
           this.$refs.toast.error('Failed to load files from GitHub');
         }
@@ -366,37 +894,40 @@ export default {
       this.titleSize()
     },
     generateYAMLFrontmatter(metadata, content) {
+      const quote = (value) => JSON.stringify(String(value));
       let yaml = '---\n';
-      
-      if (metadata.title) {
-        yaml += `title: "${metadata.title}"\n`;
-      }
-      if (metadata.description) {
-        yaml += `description: "${metadata.description}"\n`;
-      }
-      if (metadata.publishDate) {
-        yaml += `publishDate: "${metadata.publishDate}"\n`;
-      }
-      if (metadata.updatedDate) {
-        yaml += `updatedDate: "${metadata.updatedDate}"\n`;
-      }
-      if (metadata.tags && metadata.tags.length) {
-        yaml += `tags: [${metadata.tags.map(tag => `"${tag}"`).join(', ')}]\n`;
-      }
-      if (metadata.draft) {
-        yaml += `draft: true\n`;
-      }
-      if (metadata.pin) {
-        yaml += `pin: true\n`;
-      }
-      if (metadata.coverImage && (metadata.coverImage.src || metadata.coverImage.alt)) {
-        yaml += 'coverImage:\n';
-        if (metadata.coverImage.src) {
-          yaml += `  src: "${metadata.coverImage.src}"\n`;
+
+      if (metadata.title) yaml += `title: ${quote(metadata.title)}\n`;
+      if (metadata.description) yaml += `description: ${quote(metadata.description)}\n`;
+
+      if (this.contentType === 'post') {
+        if (metadata.publishDate) yaml += `publishDate: ${quote(metadata.publishDate)}\n`;
+        if (metadata.updatedDate) yaml += `updatedDate: ${quote(metadata.updatedDate)}\n`;
+        if (metadata.tags && metadata.tags.length) yaml += `tags: ${JSON.stringify(metadata.tags)}\n`;
+        yaml += `draft: ${metadata.draft === true}\n`;
+        yaml += `pin: ${metadata.pin === true}\n`;
+        if (metadata.ogImage) yaml += `ogImage: ${quote(metadata.ogImage)}\n`;
+        if (metadata.coverImage && (metadata.coverImage.src || metadata.coverImage.alt)) {
+          yaml += 'coverImage:\n';
+          if (metadata.coverImage.src) yaml += `  src: ${quote(metadata.coverImage.src)}\n`;
+          if (metadata.coverImage.alt) yaml += `  alt: ${quote(metadata.coverImage.alt)}\n`;
         }
-        if (metadata.coverImage.alt) {
-          yaml += `  alt: "${metadata.coverImage.alt}"\n`;
-        }
+      }
+
+      if (this.contentType === 'event') {
+        if (metadata.date) yaml += `date: ${quote(metadata.date)}\n`;
+        if (metadata.imageUrl) yaml += `imageUrl: ${quote(metadata.imageUrl)}\n`;
+        if (metadata.bannerUrl) yaml += `bannerUrl: ${quote(metadata.bannerUrl)}\n`;
+        if (metadata.reward) yaml += `reward: ${quote(metadata.reward)}\n`;
+        if (metadata.badge) yaml += `badge: ${quote(metadata.badge)}\n`;
+        if (metadata.status) yaml += `status: ${String(metadata.status)}\n`;
+      }
+
+      if (this.contentType === 'wiki') {
+        if (metadata.icon) yaml += `icon: ${quote(metadata.icon)}\n`;
+        if (metadata.badge) yaml += `badge: ${quote(metadata.badge)}\n`;
+        if (metadata.badgeColor) yaml += `badgeColor: ${quote(metadata.badgeColor)}\n`;
+        if (Number.isFinite(Number(metadata.order))) yaml += `order: ${Number(metadata.order)}\n`;
       }
       
       yaml += '---\n';
@@ -434,44 +965,16 @@ export default {
 
       this.isSaving = true;
       try {
-        const currentPath = this.normalizeRepoPath(this.$refs['file-title'].value);
-        const baseDir = currentPath.split('/').slice(0, -1).join('/');
         const extension = file.name.includes('.') ? file.name.split('.').pop() : 'png';
-        const filename = `cover.${extension}`;
-        const path = this.joinRepoPath(baseDir, filename);
-
-        const content = await this.toBase64(file);
-        const response = await fetch(`https://api.github.com/repos/${this.username}/${this.repo}/contents/${path}`, {
-          method: 'PUT',
-          headers: {
-            'Authorization': `token ${this.token}`,
-            'Content-Type': 'application/json',
-            'X-GitHub-Api-Version': '2022-11-28',
-          },
-          body: JSON.stringify({
-            message: `Upload cover image ${path}`,
-            content: content.split(',')[1],
-            branch: this.branch,
-            owner: this.username,
-            repo: this.repo,
-            path,
-            committer: {
-              name: this.username,
-              email: this.username + '@github.com'
-            },
-          })
+        const { filename } = await this.uploadAssetFile(file, {
+          directory: 'src/assets/images',
+          filename: `cover-${Date.now()}.${extension}`
         });
-
-        if (!response.ok) {
-          const error = await response.json();
-          this.$refs.toast.error(`Cover upload failed: ${error.message || 'Unknown error'}`);
-          return;
-        }
 
         const nextMetadata = {
           ...this.editableMetadata,
           coverImage: {
-            src: `./${filename}`,
+            src: this.getRelativeAssetPath(filename),
             alt: this.editableMetadata?.coverImage?.alt || 'Cover image'
           }
         };
@@ -479,7 +982,7 @@ export default {
         this.$refs.toast.success('Cover image uploaded');
       } catch (error) {
         console.log('Error uploading cover image', error);
-        this.$refs.toast.error('Failed to upload cover image');
+        this.$refs.toast.error(`Failed to upload cover image: ${error.message || 'Upload failed'}`);
       } finally {
         this.isSaving = false;
       }
@@ -813,66 +1316,39 @@ export default {
       previewPane.scrollTop = ratio * previewMaxScroll;
     },
     async putFile () {
-      const filePath = this.normalizeRepoPath(this.$refs['file-title']?.value);
-      if (!filePath) {
+      const filePath = this.normalizeRepoPath(this.$refs['file-title']?.value || this.selected?.path);
+      if (!filePath && !this.isGalleryMode()) {
         this.$refs.toast.error('File name is required');
         return;
       }
       
       this.isSaving = true;
       try {
-        // Generate full content with metadata for saving
-        const contentToSave = this.generateYAMLFrontmatter(
-          this.editableMetadata, 
-          this.contentWithoutMetadata || this.$refs.editor.value
-        );
-        
-        // Fetch the current file's SHA
-        const shaResponse = await fetch(`https://api.github.com/repos/${this.username}/${this.repo}/contents/${filePath}`, {
-          headers: {
-            'Authorization': `token ${this.token}`,
-            'Content-Type': 'application/json',
-            'X-GitHub-Api-Version': '2022-11-28'
-          }
-        });
+        let targetPath = filePath;
+        let contentToSave = '';
+        let message = '';
 
-        let sha = null;
-        if (shaResponse.ok) {
-          const shaData = await shaResponse.json();
-          this.selected.sha = shaData.sha;
-        }
-        const response = await fetch(`https://api.github.com/repos/${this.username}/${this.repo}/contents/${filePath}`, {
-          method: 'PUT',
-          headers: {
-            'Authorization': `token ${this.token}`,
-            'Content-Type': 'application/json',
-            'X-GitHub-Api-Version': '2022-11-28'
-          },
-          body: JSON.stringify({
-            message: `Adding/Updating file ${filePath}`,
-            content: this.toBase64Utf8(contentToSave),
-            sha: this.selected.sha || null,
-            branch: this.branch,
-            owner: this.username,
-            repo: this.repo,
-            path: filePath,
-            committer: {
-              name: this.username,
-              email: this.username +'@github.com'
-            },
-          })
-        });
-        if (response.ok) {
-          console.log('saved successfully');
-          this.$refs.toast.success('File saved successfully! 🎉');
-          await this.loadList();
+        if (this.isGalleryMode()) {
+          targetPath = this.getGalleryMetadataPath();
+          contentToSave = this.buildGalleryMetadataContent(this.selected.name, this.editableMetadata);
+          message = `Update gallery metadata for ${this.selected.name}`;
+        } else if (this.isConfigMode()) {
+          contentToSave = String(this.editorContent || this.$refs.editor?.value || '');
+          message = `Update config ${filePath}`;
         } else {
-          const error = await response.json();
-          this.$refs.toast.error(`Save failed: ${error.message || 'Unknown error'}`);
+          contentToSave = this.generateYAMLFrontmatter(
+            this.editableMetadata,
+            this.contentWithoutMetadata || this.$refs.editor.value
+          );
+          message = `Adding/Updating file ${filePath}`;
         }
+
+        await this.saveRepoTextFile(targetPath, contentToSave, message);
+        this.$refs.toast.success(this.isGalleryMode() ? 'Gallery metadata saved' : 'File saved successfully! 🎉');
+        await this.loadList();
       } catch (error) {
         console.log('Error saving file', error);
-        this.$refs.toast.error('Network error: Could not save file');
+        this.$refs.toast.error(`Save failed: ${error.message || 'Unknown error'}`);
       } finally {
         this.isSaving = false;
       }
@@ -912,7 +1388,6 @@ export default {
           },
           body: JSON.stringify({
             message: `Deleting file ${filePath}`,
-            content: this.toBase64Utf8(this.$refs['editor'].value),
             sha: fileSha,
             branch: this.branch,
             owner: this.username,
@@ -925,6 +1400,12 @@ export default {
           })
         });
         if (response.ok) {
+          if (this.isGalleryMode()) {
+            const nextMap = { ...this.galleryMetadataMap };
+            delete nextMap[this.selected?.name];
+            this.galleryMetadataMap = nextMap;
+            await this.saveRepoTextFile(this.getGalleryMetadataPath(), `${JSON.stringify(this.galleryMetadataMap, null, 2)}\n`, `Remove gallery metadata for ${this.selected?.name || 'image'}`);
+          }
           console.log('delete successfully');
           this.$refs.toast.success('File deleted successfully');
           this.clearSelected();
@@ -940,8 +1421,80 @@ export default {
         this.isSaving = false;
       }
     },
-    addImage() {
+    handlePrimaryAction() {
+      if (this.canOpenCreateModal()) {
+        this.openCreatePostModal();
+        return;
+      }
+
+      if (this.contentType === 'images') {
+        this.$refs.imageUpload.click();
+        return;
+      }
+
+      if (this.isGalleryMode()) {
+        this.openGalleryUploadModal();
+        return;
+      }
+
+      if (!this.canReplaceCurrentSelection()) {
+        this.$refs.toast.info('Select an image to replace first');
+        return;
+      }
+
+      this.$refs.replaceUpload.click();
+    },
+    handleUploadAction() {
+      if (this.isGalleryMode()) {
+        if (!this.selected || !this.isImageFile(this.selected.name)) {
+          this.$refs.toast.info('Select a gallery image first');
+          return;
+        }
+        this.$refs.replaceUpload.click();
+        return;
+      }
+
+      if (this.contentType === 'images') {
+        if (!this.selected || !this.isImageFile(this.selected.name)) {
+          this.$refs.toast.info('Select an image first');
+          return;
+        }
+        this.$refs.replaceUpload.click();
+        return;
+      }
+
+      if (this.isConfigMode() && (!this.selected || !this.isImageFile(this.selected.name))) {
+        this.$refs.toast.info('Select the map preview image in Home first');
+        return;
+      }
+
       this.$refs.imageUpload.click();
+    },
+    async replaceCurrentSelection({ target }) {
+      const file = target?.files?.[0];
+      if (!file || !this.selected?.path) {
+        target.value = '';
+        return;
+      }
+
+      this.isSaving = true;
+      try {
+        await this.uploadAssetFile(file, {
+          directory: this.normalizeRepoPath(this.selected.path).split('/').slice(0, -1).join('/'),
+          filename: this.selected.name
+        });
+
+        this.assetPreviewVersion += 1;
+        await this.loadList();
+        await this.edit(this.selected.name);
+        this.$refs.toast.success('Image replaced successfully');
+      } catch (error) {
+        console.log('Error replacing image', error);
+        this.$refs.toast.error(`Replace failed: ${error.message || 'Upload failed'}`);
+      } finally {
+        this.isSaving = false;
+        target.value = '';
+      }
     },
     toBase64(file) {
       return new Promise((resolve, reject) => {
@@ -965,41 +1518,33 @@ export default {
       return btoa(binary);
     },
     async fileUpload({target}) {
+      if (this.isConfigMode() && (!this.selected || !this.isImageFile(this.selected.name))) {
+        this.$refs.toast.warning('Select an image entry in Home first');
+        target.value = '';
+        return;
+      }
+
       this.isSaving = true;
       let uploadedCount = 0;
       let failedCount = 0;
+      const insertedMarkdown = [];
       
       for (const file of target.files) {
         try {
-          const baseDir = this.normalizeRepoPath(this.$refs['file-title'].value).split('/').slice(0, -1).join('/')
-          const path = this.joinRepoPath(baseDir, file.name)
-          const content = await this.toBase64(file);
-          const response = await fetch(`https://api.github.com/repos/${this.username}/${this.repo}/contents/${path}`, {
-            method: 'PUT',
-            headers: {
-              'Authorization': `token ${this.token}`,
-              'Content-Type': 'application/json',
-              'X-GitHub-Api-Version': '2022-11-28',
-            },
-            body: JSON.stringify({
-              message: `Adding/Updating file ${path}`,
-              content: content.split(',')[1],
-              sha: this.selected.sha || null,
-              branch: this.branch,
-              owner: this.username,
-              repo: this.repo,
-              path,
-              committer: {
-                name: this.username,
-                email: this.username +'@github.com'
-              },
-            })
-          });
-          if (response.ok) {
-            console.log('saved successfully');
-            uploadedCount++;
-          } else {
-            failedCount++;
+          const uploadOptions = this.isConfigMode()
+            ? {
+                directory: this.normalizeRepoPath(this.selected.path).split('/').slice(0, -1).join('/'),
+                filename: this.selected.name
+              }
+            : {
+                directory: this.getAssetFolderPath()
+              };
+
+          const { filename } = await this.uploadAssetFile(file, uploadOptions);
+          uploadedCount++;
+
+          if (!this.isMediaMode() && !this.isConfigMode()) {
+            insertedMarkdown.push(`![${filename}](${this.getRelativeAssetPath(filename)})`);
           }
         } catch (error) {
           console.log('Error uploading file', error);
@@ -1008,9 +1553,27 @@ export default {
       }
       
       this.isSaving = false;
+
+      if (uploadedCount > 0 && !this.isMediaMode() && !this.isConfigMode() && insertedMarkdown.length && this.$refs.editor) {
+        const editor = this.$refs.editor;
+        const start = editor.selectionStart;
+        const end = editor.selectionEnd;
+        const before = editor.value.substring(0, start);
+        const after = editor.value.substring(end);
+        const insertion = `\n${insertedMarkdown.join('\n\n')}\n`;
+        editor.value = before + insertion + after;
+        this.editorContent = editor.value;
+        editor.focus();
+        editor.setSelectionRange(start + insertion.length, start + insertion.length);
+        this.renderFile();
+      }
       
       if (uploadedCount > 0) {
+        this.assetPreviewVersion += 1;
         this.$refs.toast.success(`Uploaded ${uploadedCount} image(s) successfully`);
+        if (this.isMediaMode() || this.isConfigMode()) {
+          await this.loadList();
+        }
       }
       if (failedCount > 0) {
         this.$refs.toast.error(`Failed to upload ${failedCount} image(s)`);
@@ -1019,20 +1582,25 @@ export default {
       target.value = '';
     },
     imagePathModify(r, v, n) {
-      let text = v
-      const matched = [...v.matchAll(r)]
-      matched.forEach(m => {
-        text = text.replace(m[0], 
-          m[0].replace(m[1], n + m[1].slice(1))
-        )
-      }) 
-      return text
+      let text = v;
+      const matched = [...v.matchAll(r)];
+      matched.forEach((m) => {
+        const relativePath = String(m[1] || '').trim();
+        try {
+          const resolved = new URL(relativePath, n).toString();
+          text = text.replace(m[0], m[0].replace(m[1], resolved));
+        } catch (_error) {
+          // ignore bad url fragments
+        }
+      });
+      return text;
     },
     async handlePaste(event) {
+      if (this.isMediaMode()) return;
+
       const items = event.clipboardData?.items;
       if (!items) return;
 
-      // Check if any item is an image
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         
@@ -1045,70 +1613,36 @@ export default {
           this.$refs.toast.info('Uploading image...');
           
           try {
-            // Generate filename
             const timestamp = Date.now();
             const extension = file.type.split('/')[1] || 'png';
             const filename = `image-${timestamp}.${extension}`;
-            
-            // Get current file path directory
-            const currentPath = this.normalizeRepoPath(this.$refs['file-title']?.value || '');
-            const pathParts = currentPath.split('/').slice(0, -1);
-            const imagePath = this.joinRepoPath(...pathParts, filename);
-            
-            // Convert file to base64
-            const content = await this.toBase64(file);
-            
-            // Upload to GitHub
-            const response = await fetch(`https://api.github.com/repos/${this.username}/${this.repo}/contents/${imagePath}`, {
-              method: 'PUT',
-              headers: {
-                'Authorization': `token ${this.token}`,
-                'Content-Type': 'application/json',
-                'X-GitHub-Api-Version': '2022-11-28',
-              },
-              body: JSON.stringify({
-                message: `Upload image ${filename}`,
-                content: content.split(',')[1],
-                branch: this.branch,
-                owner: this.username,
-                repo: this.repo,
-                path: imagePath,
-                committer: {
-                  name: this.username,
-                  email: this.username + '@github.com'
-                },
-              })
+            await this.uploadAssetFile(file, {
+              directory: 'src/assets/images',
+              filename
             });
 
-            if (response.ok) {
-              // Insert markdown image syntax at cursor position
-              const editor = this.$refs.editor;
-              const start = editor.selectionStart;
-              const end = editor.selectionEnd;
-              const before = editor.value.substring(0, start);
-              const after = editor.value.substring(end);
-              
-              const imageMarkdown = `![${filename}](./${filename})`;
-              editor.value = before + imageMarkdown + after;
-              this.editorContent = editor.value;
-              
-              // Set cursor after inserted text
-              const newPosition = start + imageMarkdown.length;
-              editor.setSelectionRange(newPosition, newPosition);
-              editor.focus();
-              
-              this.renderFile();
-              this.$refs.toast.success('Image uploaded and inserted! 🖼️');
-            } else {
-              const error = await response.json();
-              this.$refs.toast.error(`Upload failed: ${error.message || 'Unknown error'}`);
-            }
+            const editor = this.$refs.editor;
+            const start = editor.selectionStart;
+            const end = editor.selectionEnd;
+            const before = editor.value.substring(0, start);
+            const after = editor.value.substring(end);
+            
+            const imageMarkdown = `![${filename}](${this.getRelativeAssetPath(filename)})`;
+            editor.value = before + imageMarkdown + after;
+            this.editorContent = editor.value;
+            
+            const newPosition = start + imageMarkdown.length;
+            editor.setSelectionRange(newPosition, newPosition);
+            editor.focus();
+            
+            this.renderFile();
+            this.$refs.toast.success('Image uploaded and inserted! 🖼️');
           } catch (error) {
             console.error('Error uploading image from clipboard:', error);
-            this.$refs.toast.error('Failed to upload image from clipboard');
+            this.$refs.toast.error(`Failed to upload image from clipboard: ${error.message || 'Upload failed'}`);
           }
           
-          break; // Only handle first image
+          break;
         }
       }
     },
@@ -1224,7 +1758,7 @@ export default {
     <div class="flex flex-col bg-bgColor border-r border-textColor/10" style="width: 320px; min-width: 320px; max-width: 320px;">
       <div class="flex flex-col justify-center w-full px-4 pt-4 gap-3 pb-3 border-b border-textColor/10">
         <div class="flex items-center justify-between">
-          <h2 class="text-lg font-semibold text-accent-2">Blog Manager</h2>
+          <h2 class="text-lg font-semibold text-accent-2">Pinecraft Admin</h2>
           <ThemeToggle />
         </div>
         
@@ -1232,11 +1766,22 @@ export default {
           class="text-center text-sm py-2 px-4 border border-textColor/20 rounded hover:border-accent transition-colors">
           Settings
         </RouterLink>
+        <div class="grid grid-cols-2 gap-1">
+          <button
+            v-for="(preset, key) in collectionPresets"
+            :key="key"
+            @click="setContentType(key)"
+            :class="['text-center text-xs py-2 px-2 border rounded transition-colors', contentType === key ? 'border-accent bg-accent/10' : 'border-textColor/20 hover:border-accent']"
+          >
+            {{ preset.label }}
+          </button>
+        </div>
         <button
-          @click="openCreatePostModal"
-          class="text-center text-sm py-2 px-4 border border-textColor/20 rounded hover:border-accent transition-colors"
+          @click="handlePrimaryAction()"
+          :disabled="!canReplaceCurrentSelection()"
+          class="text-center text-sm py-2 px-4 border border-textColor/20 rounded hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          New Post
+          {{ getPrimaryActionLabel() }}
         </button>
       </div>
       
@@ -1263,6 +1808,12 @@ export default {
               <div v-if="post.metadata?.publishDate" class="text-xs text-textColor/50 mt-1">
                 {{ new Date(post.metadata.publishDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) }}
               </div>
+              <div v-else-if="post.metadata?.date" class="text-xs text-textColor/50 mt-1">
+                {{ post.metadata.date }}
+              </div>
+              <div v-else-if="post.metadata?.description" class="text-xs text-textColor/50 mt-1 line-clamp-2">
+                {{ post.metadata.description }}
+              </div>
               <div v-if="post.metadata?.tags?.length" class="flex flex-wrap gap-1 mt-2">
                 <span v-for="tag in post.metadata.tags.slice(0, 2)" :key="tag" 
                   class="text-xs px-1.5 py-0.5 rounded bg-accent/10 text-accent">
@@ -1280,7 +1831,7 @@ export default {
           </div>
         </div>
         <div v-if="!filtered.length && !isLoading" class="text-textColor/50 text-center p-4 text-sm">
-          No posts found
+          No entries found
         </div>
       </div>
     </div>
@@ -1290,14 +1841,14 @@ export default {
       <!-- Toolbar -->
       <div class="text-textColor flex flex-row justify-between w-full border-b border-textColor/10 bg-bgColor">
         <div class="px-4 py-3 flex flex-row gap-2">
-          <button v-if="selected" @click="putFile" :disabled="isSaving" 
+          <button v-if="canSaveSelected()" @click="putFile" :disabled="isSaving" 
             class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
             <LoadingSpinner v-if="isSaving" size="sm" color="accent" />
             <span v-else>Save</span>
           </button>
-          <button v-if="selected" @click="addImage" 
+          <button v-if="canUploadCurrentSelection()" @click="handleUploadAction()" 
             class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-accent transition-colors">
-            Add Image
+            {{ getUploadButtonLabel() }}
           </button>
           <input
             ref="imageUpload"
@@ -1308,22 +1859,29 @@ export default {
             capture
             class="hidden"
           />
+          <input
+            ref="replaceUpload"
+            type="file"
+            @change="replaceCurrentSelection"
+            accept="image/*"
+            class="hidden"
+          />
           <button 
-            v-if="selected"
+            v-if="selected && !isMediaMode() && !isConfigMode()"
             :class="['px-4 py-2 text-sm border rounded transition-colors',
                      preview ? 'border-accent bg-accent/10' : 'border-textColor/20 hover:border-accent']"
             @click="previewSwich">
             Preview
           </button>
           <button 
-            v-if="selected"
+            v-if="selected && !isMediaMode() && !isConfigMode()"
             :class="['px-4 py-2 text-sm border rounded transition-colors',
                      showMetadataInEditor ? 'border-accent bg-accent/10' : 'border-textColor/20 hover:border-accent']"
             @click="toggleMetadataInEditor"
             title="Toggle frontmatter visibility in editor">
             {{ showMetadataInEditor ? 'Hide' : 'Show' }} Metadata
           </button>
-          <span v-if="!selected" class="text-sm text-textColor/60 px-1 py-2">No file selected</span>
+          <span v-if="!selected" class="text-sm text-textColor/60 px-1 py-2">No entry selected</span>
         </div>
         
         <input v-if="selected" ref="file-title" @input="titleSize" 
@@ -1333,7 +1891,7 @@ export default {
         <div v-else class="w-full"></div>
         
         <div class="px-4 py-3 flex flex-row gap-2">
-          <button v-if="selected && selected.path" @click="delFile" :disabled="isSaving"
+          <button v-if="canDeleteSelected()" @click="delFile" :disabled="isSaving"
             class="px-4 py-2 text-sm border border-textColor/20 rounded hover:border-red-500 hover:text-red-500 transition-colors disabled:opacity-50">
             Delete
           </button>
@@ -1346,14 +1904,33 @@ export default {
       
       <!-- Metadata Editor (Normal mode) -->
       <MetadataEditor 
-        v-if="selected && !preview"
+        v-if="selected && !preview && !isMediaMode() && !isConfigMode()"
         :metadata="editableMetadata"
         :all-posts="posts"
+        :content-type="contentType"
         @update:metadata="updateMetadata"
         @upload-cover="uploadCoverImage"
       />
 
-      <div v-if="selected && !preview && isAIConfigured()" class="border-b border-textColor/10 bg-bgColor">
+      <SiteSettingsEditor
+        v-if="selected && isHomeSettingsSelection()"
+        :content="editorContent"
+        @update:content="(value) => { editorContent = value; contentWithoutMetadata = value; }"
+      />
+
+      <HomeContentEditor
+        v-if="selected && isHomeTextSelection()"
+        :content="editorContent"
+        @update:content="(value) => { editorContent = value; contentWithoutMetadata = value; }"
+      />
+
+      <GalleryMetadataEditor
+        v-if="selected && isGalleryMode()"
+        :metadata="editableMetadata"
+        @update:metadata="updateMetadata"
+      />
+
+      <div v-if="selected && !preview && !isMediaMode() && !isConfigMode() && isAIConfigured()" class="border-b border-textColor/10 bg-bgColor">
         <button
           @click="isAIPanelCollapsed = !isAIPanelCollapsed"
           class="w-full px-4 py-3 flex items-center justify-between hover:bg-textColor/5 transition-colors"
@@ -1416,7 +1993,7 @@ export default {
       </div>
 
       <div v-if="!selected" class="flex-1 flex items-center justify-center text-textColor/60 text-lg">
-        Choose or create a post
+        {{ isConfigMode() ? 'Choose a Home item' : isMediaMode() ? `Choose or upload ${getCurrentPreset().singleLabel.toLowerCase()}` : `Choose or create ${getCurrentPreset().singleLabel.toLowerCase()}` }}
       </div>
       
       <!-- Layout: Preview Mode (Left column: Metadata + Editor, Right column: Preview) -->
@@ -1428,6 +2005,7 @@ export default {
             v-if="selected"
             :metadata="editableMetadata"
             :all-posts="posts"
+            :content-type="contentType"
             @update:metadata="updateMetadata"
             @upload-cover="uploadCoverImage"
           />
@@ -1520,6 +2098,30 @@ export default {
         </div>
       </div>
       
+      <div v-else-if="selected && (isMediaMode() || (isConfigMode() && isImageFile(selected.name)))" class="flex-1 overflow-y-auto p-6 md:p-8">
+        <div class="mx-auto max-w-5xl">
+          <div class="mb-3 text-sm text-textColor/60 font-mono break-all">
+            {{ selected.path }}
+          </div>
+          <div class="rounded border border-textColor/10 bg-black/10 p-3">
+            <img
+              :src="`${getRawGitHubUrl(selected.path)}?v=${assetPreviewVersion}`"
+              :alt="selected.name"
+              class="max-h-[75vh] w-full object-contain rounded"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div v-else-if="selected && isConfigMode() && !isImageFile(selected.name)" class="flex-1 overflow-y-auto p-6 md:p-8">
+        <div class="mx-auto max-w-4xl rounded border border-textColor/10 bg-bgColor/40 p-6 text-textColor/75">
+          <h3 class="text-lg font-semibold text-accent-2 mb-2">Form-based editing enabled</h3>
+          <p class="text-sm">
+            Update the fields above and press Save to apply the changes to the selected Home file.
+          </p>
+        </div>
+      </div>
+
       <!-- Layout: Normal Mode (Editor only) -->
       <div v-else-if="selected" class="flex flex-row w-full h-full overflow-hidden">
         <div class="relative w-full">
@@ -1539,9 +2141,9 @@ export default {
       @click.self="closeCreatePostModal"
     >
       <div class="w-full max-w-md rounded border border-textColor/20 bg-bgColor p-4">
-        <h3 class="mb-3 text-lg font-semibold text-accent-2">Create New Post</h3>
+        <h3 class="mb-3 text-lg font-semibold text-accent-2">Create New Entry</h3>
         <p class="mb-3 text-sm text-textColor/70">
-          Enter folder slug. Post will be created as <span class="font-mono">/slug/index.md</span>
+          Enter slug. File will be created as <span class="font-mono">/slug.md</span> in the selected collection.
         </p>
         <input
           ref="newPostSlugInput"
@@ -1566,7 +2168,82 @@ export default {
             :disabled="!!getNewPostSlugError()"
             class="rounded border border-textColor/20 px-3 py-2 text-sm hover:border-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Create Draft
+            Create Entry
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="showGalleryUploadModal"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      @click.self="closeGalleryUploadModal"
+    >
+      <div class="w-full max-w-2xl rounded border border-textColor/20 bg-bgColor p-4">
+        <h3 class="mb-3 text-lg font-semibold text-accent-2">Upload Gallery Image</h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="space-y-3">
+            <input
+              type="file"
+              accept="image/*"
+              @change="onGalleryUploadFileChange"
+              class="w-full rounded border border-textColor/20 bg-bgColor px-3 py-2 text-sm text-textColor"
+            />
+
+            <div>
+              <label class="block text-xs text-textColor/70 mb-1">Title</label>
+              <input
+                v-model="galleryUploadTitle"
+                type="text"
+                class="w-full rounded border border-textColor/20 bg-bgColor px-3 py-2 text-sm text-textColor focus:border-accent"
+              />
+            </div>
+
+            <div>
+              <label class="block text-xs text-textColor/70 mb-1">Date</label>
+              <input
+                v-model="galleryUploadDate"
+                type="text"
+                class="w-full rounded border border-textColor/20 bg-bgColor px-3 py-2 text-sm text-textColor focus:border-accent"
+              />
+            </div>
+            <div class="flex items-center gap-4">
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input v-model="galleryUploadPin" type="checkbox" class="accent-accent cursor-pointer" />
+                <span class="text-textColor">Pin</span>
+              </label>
+              <label class="flex items-center gap-2 text-sm cursor-pointer">
+                <input v-model="galleryUploadDraft" type="checkbox" class="accent-accent cursor-pointer" />
+                <span class="text-textColor">Draft</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="rounded border border-textColor/10 bg-black/10 p-3 min-h-56 flex items-center justify-center">
+            <img
+              v-if="galleryUploadPreview"
+              :src="galleryUploadPreview"
+              alt="Preview"
+              class="max-h-64 w-full object-contain rounded"
+            />
+            <span v-else class="text-sm text-textColor/50">Preview will appear here</span>
+          </div>
+        </div>
+
+        <div class="mt-4 flex justify-end gap-2">
+          <button
+            @click="closeGalleryUploadModal"
+            class="rounded border border-textColor/20 px-3 py-2 text-sm hover:border-accent"
+          >
+            Cancel
+          </button>
+          <button
+            @click="confirmGalleryUpload"
+            :disabled="!galleryUploadFile || isSaving"
+            class="rounded border border-textColor/20 px-3 py-2 text-sm hover:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Upload to Gallery
           </button>
         </div>
       </div>

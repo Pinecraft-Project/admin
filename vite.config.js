@@ -6,7 +6,7 @@ import { nodePolyfills } from 'vite-plugin-node-polyfills'
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  base: '/astro-blog-post-manager/',
+  base: '/',
   plugins: [
     vue(),
     nodePolyfills({
