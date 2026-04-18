@@ -647,7 +647,6 @@ export default {
           : {};
         this.contentWithoutMetadata = '';
         this.editorContent = '';
-        this.$refs.toast.success(this.isGalleryMode() ? 'Gallery image selected' : 'Image selected');
         return;
       }
 
@@ -935,18 +934,17 @@ export default {
     },
     updateMetadata(metadata) {
       this.editableMetadata = metadata;
+      this.postMetadata = metadata;
+
+      if (this.isMediaMode() || this.isConfigMode()) {
+        return;
+      }
       
-      // Generate frontmatter with quotes
       const fullContent = this.generateYAMLFrontmatter(metadata, this.contentWithoutMetadata);
       
-      // Update editor based on visibility setting
       if (this.showMetadataInEditor) {
         this.editorContent = fullContent;
       }
-      // If metadata is hidden, editor already shows only content
-      
-      // Update preview
-      this.postMetadata = metadata;
     },
     toggleMetadataInEditor() {
       this.showMetadataInEditor = !this.showMetadataInEditor;

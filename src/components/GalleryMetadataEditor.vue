@@ -10,6 +10,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:metadata']);
 
+const isSyncing = ref(false);
 const localMeta = ref({
   title: '',
   date: 'Без дати',
@@ -18,15 +19,22 @@ const localMeta = ref({
 });
 
 watch(() => props.metadata, (value) => {
+  isSyncing.value = true;
   localMeta.value = {
     title: String(value?.title || ''),
     date: String(value?.date || 'Без дати'),
     pin: value?.pin === true,
     draft: value?.draft === true
   };
+
+  setTimeout(() => {
+    isSyncing.value = false;
+  }, 0);
 }, { immediate: true, deep: true });
 
 watch(localMeta, (value) => {
+  if (isSyncing.value) return;
+
   emit('update:metadata', {
     title: String(value.title || ''),
     date: String(value.date || 'Без дати'),
